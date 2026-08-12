@@ -1,11 +1,9 @@
-```groovy
 pipeline {
     agent any
 
     options {
         timestamps()
         disableConcurrentBuilds()
-        skipDefaultCheckout(false)
         buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
@@ -20,7 +18,7 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                echo '==> Checking out source code'
+                echo 'Checking out source code'
                 checkout scm
             }
         }
@@ -30,7 +28,7 @@ pipeline {
                 sh '''
                     set -eu
 
-                    echo "==> Installing kubectl locally in Jenkins workspace"
+                    echo "==> Installing kubectl"
 
                     if [ ! -x "$KUBECTL_BIN" ]; then
                         curl -fL \
@@ -50,22 +48,19 @@ pipeline {
                 sh '''
                     set -eu
 
-                    echo "==> Checking Kubernetes configuration"
+                    echo "==> Checking kubeconfig"
 
-                    if [ -n "${KUBECONFIG_FILE:-}" ] && [ -f "$KUBECONFIG_FILE" ]; then
-                        cp "$KUBECONFIG_FILE" "$KUBECONFIG"
-                        chmod 600 "$KUBECONFIG"
-                    elif [ -f "/var/lib/jenkins/.kube/config" ]; then
+                    if [ -f "/var/lib/jenkins/.kube/config" ]; then
                         cp "/var/lib/jenkins/.kube/config" "$KUBECONFIG"
                         chmod 600 "$KUBECONFIG"
+
                     elif [ -f "$HOME/.kube/config" ]; then
                         cp "$HOME/.kube/config" "$KUBECONFIG"
                         chmod 600 "$KUBECONFIG"
+
                     else
-                        echo "ERROR: Kubernetes kubeconfig was not found."
-                        echo ""
-                        echo "Configure KUBECONFIG_FILE as a Jenkins secret/file"
-                        echo "or make a kubeconfig available to the Jenkins user."
+                        echo "ERROR: kubeconfig not found."
+                        echo "Jenkins needs access to a Kubernetes cluster."
                         exit 1
                     fi
 
@@ -88,7 +83,6 @@ pipeline {
                     test -f mysql-deployment.yaml
                     test -f wordpress-deployment.yaml
 
-                    echo "==> Files found:"
                     ls -lh \
                         namespace-secret.yaml \
                         mysql-deployment.yaml \
@@ -120,7 +114,7 @@ PY
                 sh '''
                     set -eu
 
-                    echo "==> Running Kubernetes server-side dry run"
+                    echo "==> Kubernetes server-side dry run"
 
                     "$KUBECTL_BIN" apply \
                         --dry-run=server \
@@ -164,7 +158,7 @@ PY
                     "$KUBECTL_BIN" apply \
                         -f mysql-deployment.yaml
 
-                    echo "==> Waiting for MySQL rollout"
+                    echo "==> Waiting for MySQL"
 
                     "$KUBECTL_BIN" rollout status \
                         deployment/mysql \
@@ -184,7 +178,7 @@ PY
                     "$KUBECTL_BIN" apply \
                         -f wordpress-deployment.yaml
 
-                    echo "==> Waiting for WordPress rollout"
+                    echo "==> Waiting for WordPress"
 
                     "$KUBECTL_BIN" rollout status \
                         deployment/wordpress \
@@ -199,33 +193,20 @@ PY
                 sh '''
                     set -eu
 
-                    echo "======================================"
-                    echo "Pods"
-                    echo "======================================"
+                    echo "========== PODS =========="
 
                     "$KUBECTL_BIN" get pods \
                         -n "$NAMESPACE" \
                         -o wide
 
-                    echo "======================================"
-                    echo "Deployments"
-                    echo "======================================"
+                    echo "========== DEPLOYMENTS =========="
 
                     "$KUBECTL_BIN" get deployments \
                         -n "$NAMESPACE"
 
-                    echo "======================================"
-                    echo "Services"
-                    echo "======================================"
+                    echo "========== SERVICES =========="
 
                     "$KUBECTL_BIN" get services \
-                        -n "$NAMESPACE"
-
-                    echo "======================================"
-                    echo "WordPress Service"
-                    echo "======================================"
-
-                    "$KUBECTL_BIN" get svc wordpress-service \
                         -n "$NAMESPACE"
                 '''
             }
@@ -234,16 +215,11 @@ PY
 
     post {
         success {
-            echo '======================================'
-            echo '✅ WORDPRESS CI/CD SUCCESSFUL'
-            echo '======================================'
+            echo '✅ WORDPRESS CI/CD PIPELINE SUCCESSFUL'
         }
 
         failure {
-            echo '======================================'
-            echo '❌ PIPELINE FAILED'
-            echo '======================================'
-            echo 'Check the failed stage above.'
+            echo '❌ PIPELINE FAILED - CHECK THE FAILED STAGE'
         }
 
         always {
@@ -251,4 +227,3 @@ PY
         }
     }
 }
-```
