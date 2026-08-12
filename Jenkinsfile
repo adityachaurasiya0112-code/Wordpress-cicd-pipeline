@@ -1,38 +1,78 @@
+```groovy
 pipeline {
     agent any
 
     options {
         timestamps()
         disableConcurrentBuilds()
+        skipDefaultCheckout(false)
         buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     environment {
         NAMESPACE = 'wp-project'
-        KUBECONFIG = '/var/lib/jenkins/.kube/config'
+        KUBECTL_VERSION = 'v1.34.1'
+        KUBECTL_BIN = "${WORKSPACE}/kubectl"
+        KUBECONFIG = "${WORKSPACE}/kubeconfig"
     }
 
     stages {
 
         stage('Checkout') {
             steps {
+                echo '==> Checking out source code'
                 checkout scm
             }
         }
 
-        stage('Check Tools') {
+        stage('Install kubectl') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
-                    echo "==> Checking Git"
-                    git --version
+                    echo "==> Installing kubectl locally in Jenkins workspace"
 
-                    echo "==> Checking kubectl"
-                    kubectl version --client
+                    if [ ! -x "$KUBECTL_BIN" ]; then
+                        curl -fL \
+                          "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+                          -o "$KUBECTL_BIN"
 
-                    echo "==> Checking Kubernetes connection"
-                    kubectl cluster-info
+                        chmod +x "$KUBECTL_BIN"
+                    fi
+
+                    "$KUBECTL_BIN" version --client
+                '''
+            }
+        }
+
+        stage('Check Kubernetes Access') {
+            steps {
+                sh '''
+                    set -eu
+
+                    echo "==> Checking Kubernetes configuration"
+
+                    if [ -n "${KUBECONFIG_FILE:-}" ] && [ -f "$KUBECONFIG_FILE" ]; then
+                        cp "$KUBECONFIG_FILE" "$KUBECONFIG"
+                        chmod 600 "$KUBECONFIG"
+                    elif [ -f "/var/lib/jenkins/.kube/config" ]; then
+                        cp "/var/lib/jenkins/.kube/config" "$KUBECONFIG"
+                        chmod 600 "$KUBECONFIG"
+                    elif [ -f "$HOME/.kube/config" ]; then
+                        cp "$HOME/.kube/config" "$KUBECONFIG"
+                        chmod 600 "$KUBECONFIG"
+                    else
+                        echo "ERROR: Kubernetes kubeconfig was not found."
+                        echo ""
+                        echo "Configure KUBECONFIG_FILE as a Jenkins secret/file"
+                        echo "or make a kubeconfig available to the Jenkins user."
+                        exit 1
+                    fi
+
+                    echo "==> Testing Kubernetes connection"
+
+                    "$KUBECTL_BIN" cluster-info
+                    "$KUBECTL_BIN" get nodes
                 '''
             }
         }
@@ -40,7 +80,7 @@ pipeline {
         stage('Validate Manifests') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
                     echo "==> Checking manifest files"
 
@@ -48,9 +88,11 @@ pipeline {
                     test -f mysql-deployment.yaml
                     test -f wordpress-deployment.yaml
 
-                    ls -l namespace-secret.yaml \
-                          mysql-deployment.yaml \
-                          wordpress-deployment.yaml
+                    echo "==> Files found:"
+                    ls -lh \
+                        namespace-secret.yaml \
+                        mysql-deployment.yaml \
+                        wordpress-deployment.yaml
 
                     echo "==> Validating YAML"
 
@@ -66,7 +108,8 @@ files = [
 for file in files:
     with open(file, "r") as f:
         list(yaml.safe_load_all(f))
-    print(f"{file} OK")
+
+    print(file + " OK")
 PY
                 '''
             }
@@ -75,19 +118,19 @@ PY
         stage('Kubernetes Dry Run') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
-                    echo "==> Kubernetes server-side dry run"
+                    echo "==> Running Kubernetes server-side dry run"
 
-                    kubectl apply \
+                    "$KUBECTL_BIN" apply \
                         --dry-run=server \
                         -f namespace-secret.yaml
 
-                    kubectl apply \
+                    "$KUBECTL_BIN" apply \
                         --dry-run=server \
                         -f mysql-deployment.yaml
 
-                    kubectl apply \
+                    "$KUBECTL_BIN" apply \
                         --dry-run=server \
                         -f wordpress-deployment.yaml
 
@@ -99,14 +142,14 @@ PY
         stage('Deploy Namespace and Secret') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
-                    echo "==> Creating namespace and secret"
+                    echo "==> Deploying namespace and secret"
 
-                    kubectl apply -f namespace-secret.yaml
+                    "$KUBECTL_BIN" apply \
+                        -f namespace-secret.yaml
 
-                    echo "==> Namespace status"
-                    kubectl get namespace ${NAMESPACE}
+                    "$KUBECTL_BIN" get namespace "$NAMESPACE"
                 '''
             }
         }
@@ -114,17 +157,18 @@ PY
         stage('Deploy MySQL') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
                     echo "==> Deploying MySQL"
 
-                    kubectl apply -f mysql-deployment.yaml
+                    "$KUBECTL_BIN" apply \
+                        -f mysql-deployment.yaml
 
-                    echo "==> Waiting for MySQL"
+                    echo "==> Waiting for MySQL rollout"
 
-                    kubectl rollout status \
+                    "$KUBECTL_BIN" rollout status \
                         deployment/mysql \
-                        -n ${NAMESPACE} \
+                        -n "$NAMESPACE" \
                         --timeout=180s
                 '''
             }
@@ -133,17 +177,18 @@ PY
         stage('Deploy WordPress') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
                     echo "==> Deploying WordPress"
 
-                    kubectl apply -f wordpress-deployment.yaml
+                    "$KUBECTL_BIN" apply \
+                        -f wordpress-deployment.yaml
 
-                    echo "==> Waiting for WordPress"
+                    echo "==> Waiting for WordPress rollout"
 
-                    kubectl rollout status \
+                    "$KUBECTL_BIN" rollout status \
                         deployment/wordpress \
-                        -n ${NAMESPACE} \
+                        -n "$NAMESPACE" \
                         --timeout=180s
                 '''
             }
@@ -152,36 +197,36 @@ PY
         stage('Post Deploy Verification') {
             steps {
                 sh '''
-                    set -e
+                    set -eu
 
-                    echo "================================"
+                    echo "======================================"
                     echo "Pods"
-                    echo "================================"
+                    echo "======================================"
 
-                    kubectl get pods \
-                        -n ${NAMESPACE} \
+                    "$KUBECTL_BIN" get pods \
+                        -n "$NAMESPACE" \
                         -o wide
 
-                    echo "================================"
+                    echo "======================================"
                     echo "Deployments"
-                    echo "================================"
+                    echo "======================================"
 
-                    kubectl get deployments \
-                        -n ${NAMESPACE}
+                    "$KUBECTL_BIN" get deployments \
+                        -n "$NAMESPACE"
 
-                    echo "================================"
+                    echo "======================================"
                     echo "Services"
-                    echo "================================"
+                    echo "======================================"
 
-                    kubectl get services \
-                        -n ${NAMESPACE}
+                    "$KUBECTL_BIN" get services \
+                        -n "$NAMESPACE"
 
-                    echo "================================"
-                    echo "WordPress Endpoints"
-                    echo "================================"
+                    echo "======================================"
+                    echo "WordPress Service"
+                    echo "======================================"
 
-                    kubectl get svc wordpress-service \
-                        -n ${NAMESPACE}
+                    "$KUBECTL_BIN" get svc wordpress-service \
+                        -n "$NAMESPACE"
                 '''
             }
         }
@@ -189,11 +234,16 @@ PY
 
     post {
         success {
-            echo '✅ WordPress CI/CD pipeline completed successfully!'
+            echo '======================================'
+            echo '✅ WORDPRESS CI/CD SUCCESSFUL'
+            echo '======================================'
         }
 
         failure {
-            echo '❌ Pipeline failed. Check the stage logs above.'
+            echo '======================================'
+            echo '❌ PIPELINE FAILED'
+            echo '======================================'
+            echo 'Check the failed stage above.'
         }
 
         always {
@@ -201,3 +251,4 @@ PY
         }
     }
 }
+```
