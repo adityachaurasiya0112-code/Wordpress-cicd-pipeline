@@ -20,7 +20,7 @@ pipeline {
 
                 git(
                     branch: 'main',
-                    url: 'https://github.com/ayu-haker/wordpress-ci-cd-pipeline.git'
+                    url: 'https://github.com/adityachaurasiya0112-code/wordpress-ci-cd-pipeline.git'
                 )
             }
         }
