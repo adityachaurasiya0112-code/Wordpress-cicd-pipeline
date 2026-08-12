@@ -16,13 +16,6 @@ pipeline {
 
     stages {
 
-        stage('Checkout') {
-            steps {
-                echo 'Checking out source code'
-                checkout scm
-            }
-        }
-
         stage('Install kubectl') {
             steps {
                 sh '''
@@ -59,8 +52,7 @@ pipeline {
                         chmod 600 "$KUBECONFIG"
 
                     else
-                        echo "ERROR: kubeconfig not found."
-                        echo "Jenkins needs access to a Kubernetes cluster."
+                        echo "ERROR: kubeconfig not found"
                         exit 1
                     fi
 
@@ -83,12 +75,14 @@ pipeline {
                     test -f mysql-deployment.yaml
                     test -f wordpress-deployment.yaml
 
+                    echo "==> Manifest files found"
+
                     ls -lh \
                         namespace-secret.yaml \
                         mysql-deployment.yaml \
                         wordpress-deployment.yaml
 
-                    echo "==> Validating YAML"
+                    echo "==> Validating YAML syntax"
 
                     python3 - <<'PY'
 import yaml
@@ -114,21 +108,25 @@ PY
                 sh '''
                     set -eu
 
-                    echo "==> Kubernetes server-side dry run"
+                    echo "==> Validating Namespace"
 
                     "$KUBECTL_BIN" apply \
-                        --dry-run=server \
+                        --dry-run=client \
                         -f namespace-secret.yaml
 
+                    echo "==> Validating MySQL"
+
                     "$KUBECTL_BIN" apply \
-                        --dry-run=server \
+                        --dry-run=client \
                         -f mysql-deployment.yaml
 
+                    echo "==> Validating WordPress"
+
                     "$KUBECTL_BIN" apply \
-                        --dry-run=server \
+                        --dry-run=client \
                         -f wordpress-deployment.yaml
 
-                    echo "==> Dry run successful"
+                    echo "==> Client-side dry run successful"
                 '''
             }
         }
@@ -143,7 +141,14 @@ PY
                     "$KUBECTL_BIN" apply \
                         -f namespace-secret.yaml
 
+                    echo "==> Namespace"
+
                     "$KUBECTL_BIN" get namespace "$NAMESPACE"
+
+                    echo "==> Secrets"
+
+                    "$KUBECTL_BIN" get secrets \
+                        -n "$NAMESPACE"
                 '''
             }
         }
@@ -158,7 +163,7 @@ PY
                     "$KUBECTL_BIN" apply \
                         -f mysql-deployment.yaml
 
-                    echo "==> Waiting for MySQL"
+                    echo "==> Waiting for MySQL rollout"
 
                     "$KUBECTL_BIN" rollout status \
                         deployment/mysql \
@@ -178,7 +183,7 @@ PY
                     "$KUBECTL_BIN" apply \
                         -f wordpress-deployment.yaml
 
-                    echo "==> Waiting for WordPress"
+                    echo "==> Waiting for WordPress rollout"
 
                     "$KUBECTL_BIN" rollout status \
                         deployment/wordpress \
@@ -208,6 +213,11 @@ PY
 
                     "$KUBECTL_BIN" get services \
                         -n "$NAMESPACE"
+
+                    echo "========== PVC =========="
+
+                    "$KUBECTL_BIN" get pvc \
+                        -n "$NAMESPACE" || true
                 '''
             }
         }
@@ -215,11 +225,15 @@ PY
 
     post {
         success {
+            echo '=========================================='
             echo '✅ WORDPRESS CI/CD PIPELINE SUCCESSFUL'
+            echo '=========================================='
         }
 
         failure {
-            echo '❌ PIPELINE FAILED - CHECK THE FAILED STAGE'
+            echo '=========================================='
+            echo '❌ WORDPRESS CI/CD PIPELINE FAILED'
+            echo '=========================================='
         }
 
         always {
